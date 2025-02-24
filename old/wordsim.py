@@ -81,4 +81,3 @@ if __name__ == "__main__":
     parser.add_argument("--plot", action="store_true", help="Plot the results and save to the results folder")
     args = parser.parse_args()
     evaluate_wordsim(args.model, args.wordsim, args.plot)
-    # Sample usage : python wordsim.py --model skipgram.pt --wordsim "WordSim353 Crowd.csv" --plot
