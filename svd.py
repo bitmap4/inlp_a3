@@ -1,10 +1,11 @@
 import numpy as np
 import torch
 from nltk.corpus import brown, stopwords
-from collections import Counter
+from collections import Counter, defaultdict
 from sklearn.decomposition import TruncatedSVD
 from config import *
 from tqdm import tqdm
+from scipy.sparse import csr_matrix
 
 # Load and tokenize the Brown corpus
 corpus = brown.words()
@@ -21,21 +22,29 @@ word_to_idx = {word: i for i, word in enumerate(vocab_list)}
 idx_to_word = {i: word for word, i in word_to_idx.items()}
 
 # Build Co-occurrence Matrix with progress bar
-co_matrix = np.zeros((vocab_size, vocab_size))
+co_matrix = defaultdict(lambda: defaultdict(int))
 for i in tqdm(range(len(tokens)), desc="Building co-occurrence matrix"):
     word = tokens[i]
     if word in word_to_idx:
         word_idx = word_to_idx[word]
-        start = max(0, i - WINDOW_SIZE)
-        end = min(len(tokens), i + WINDOW_SIZE + 1)
-        for j in range(start, end):
-            if i != j and tokens[j] in word_to_idx:
-                context_idx = word_to_idx[tokens[j]]
-                co_matrix[word_idx, context_idx] += 1
+        window = tokens[max(0, i-WINDOW_SIZE):min(len(tokens), i+WINDOW_SIZE+1)]
+        for context in window:
+            if context in word_to_idx and context != word:
+                co_matrix[word_idx][word_to_idx[context]] += 1
+
+# Convert to sparse matrix
+rows, cols, data = [], [], []
+for i in co_matrix:
+    for j in co_matrix[i]:
+        rows.append(i)
+        cols.append(j)
+        data.append(co_matrix[i][j])
+
+sparse_matrix = csr_matrix((data, (rows, cols)), shape=(vocab_size, vocab_size))
 
 # Apply SVD
 svd = TruncatedSVD(n_components=EMBEDDING_DIM)
-word_vectors = svd.fit_transform(co_matrix)
+word_vectors = svd.fit_transform(sparse_matrix)
 
 # Convert to PyTorch tensor
 word_vectors_tensor = torch.tensor(word_vectors, dtype=torch.float32)

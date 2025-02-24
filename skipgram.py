@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from nltk.corpus import brown, stopwords
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from config import *
 from tqdm import tqdm
 
@@ -11,7 +11,13 @@ from tqdm import tqdm
 corpus = brown.sents()
 stop_words = stop_words = set(stopwords.words('english'))
 # Build vocabulary
-word_counts = Counter([word for sentence in corpus for word in sentence if word.lower() not in stop_words])
+# Use defaultdict for faster counting
+word_counts = defaultdict(int)
+for sentence in corpus:
+    for word in sentence:
+        if word.lower() not in stop_words:
+            word_counts[word] += 1
+
 vocab = {word: i for i, (word, count) in enumerate(word_counts.items())}
 idx_to_word = {i: word for word, i in vocab.items()}
 vocab_size = len(vocab)
@@ -31,8 +37,18 @@ def generate_skipgram_pairs(corpus, window_size):
                     pairs.append((center_word, context))
     return pairs
 
-pairs = generate_skipgram_pairs(corpus, WINDOW_SIZE)
-pairs = torch.tensor(pairs, dtype=torch.long)
+# Pre-allocate tensor memory
+pairs = torch.tensor(generate_skipgram_pairs(corpus, WINDOW_SIZE), dtype=torch.long)
+pairs = pairs.pin_memory() if torch.cuda.is_available() else pairs
+
+# Batch data loading
+train_data = torch.utils.data.DataLoader(
+    pairs, 
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    pin_memory=True if torch.cuda.is_available() else False,
+    num_workers=4
+)
 
 # Skip-Gram with Negative Sampling Model
 class Word2Vec(nn.Module):
