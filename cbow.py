@@ -1,88 +1,98 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from helper import load_brown_corpus, build_vocab, generate_training_data_cbow, get_negative_sampling_distribution
-import random
-import numpy as np
+from nltk.corpus import brown
+from collections import Counter
+from config import *
 
-# Select device: use GPU if available, otherwise CPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Load and preprocess Brown corpus
+corpus = brown.sents()
+word_counts = Counter([word for sentence in corpus for word in sentence])
+vocab = {word: i for i, (word, count) in enumerate(word_counts.items())}
+idx_to_word = {i: word for word, i in vocab.items()}
+vocab_size = len(vocab)
 
+# Generate training data for CBOW
+def generate_cbow_pairs(corpus, window_size):
+    pairs = []
+    for sentence in corpus:
+        for i, word in enumerate(sentence):
+            if word in vocab:
+                context = []
+                for j in range(-window_size, window_size + 1):
+                    if j != 0 and 0 <= i + j < len(sentence) and sentence[i + j] in vocab:
+                        context.append(vocab[sentence[i + j]])
+                if len(context) == 2 * window_size:
+                    pairs.append((context, vocab[word]))  # (context_words, target)
+    return pairs
+
+pairs = generate_cbow_pairs(corpus, WINDOW_SIZE)
+
+# Convert pairs to tensors
+context_tensors = torch.tensor([pair[0] for pair in pairs], dtype=torch.long)
+target_tensors = torch.tensor([pair[1] for pair in pairs], dtype=torch.long)
+
+# CBOW Model with Negative Sampling
 class CBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
         super(CBOWModel, self).__init__()
-        self.input_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.output_embeddings = nn.Embedding(vocab_size, embedding_dim)
-        # Optionally, initialize weights using Xavier initialization:
-        nn.init.xavier_uniform_(self.input_embeddings.weight)
-        nn.init.xavier_uniform_(self.output_embeddings.weight)
-    
-    def forward(self, context_words, target_words, negative_words):
-        # context_words: shape (batch_size, context_size)
-        # target_words: shape (batch_size)
-        # negative_words: shape (batch_size, num_negatives)
-        # Get embeddings for context words and average them:
-        context_embeds = self.input_embeddings(context_words)  # (batch_size, context_size, embedding_dim)
-        context_embeds = torch.mean(context_embeds, dim=1)       # (batch_size, embedding_dim)
-        
-        # Get embeddings for target words:
-        target_embeds = self.output_embeddings(target_words)    # (batch_size, embedding_dim)
-        
-        # Positive score: dot product between context and target embeddings
-        pos_score = torch.sum(context_embeds * target_embeds, dim=1)  # (batch_size)
-        pos_loss = torch.log(torch.sigmoid(pos_score) + 1e-10)          # (batch_size)
-        
-        # Negative sampling: get embeddings for negative examples
-        neg_embeds = self.output_embeddings(negative_words)           # (batch_size, num_negatives, embedding_dim)
-        # Compute dot product between each negative sample and the context vector
-        neg_score = torch.bmm(neg_embeds, context_embeds.unsqueeze(2)).squeeze(2)  # (batch_size, num_negatives)
-        neg_loss = torch.sum(torch.log(torch.sigmoid(-neg_score) + 1e-10), dim=1)  # (batch_size)
-        
-        # Combine positive and negative loss; take negative to minimize
-        loss = - (pos_loss + neg_loss)
-        return loss.mean()
+        self.embeddings.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
+        self.output_embeddings.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
 
-def train_cbow(embedding_dim=300, window_size=3, min_count=5, num_negatives=5, epochs=5, batch_size=128, lr=0.001):
-    # Load the Brown Corpus and build vocabulary
-    sentences = load_brown_corpus()
-    word2idx, idx2word, vocab = build_vocab(sentences, min_count)
-    # Generate training data for CBOW: each sample is (context, target)
-    training_data = generate_training_data_cbow(sentences, word2idx, window_size)
-    vocab_size = len(word2idx)
-    
-    model = CBOWModel(vocab_size, embedding_dim).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    
-    # Get the negative sampling distribution and convert to a torch tensor
-    neg_sampling_prob = get_negative_sampling_distribution(vocab, word2idx)
-    neg_sampling_prob = torch.tensor(neg_sampling_prob, dtype=torch.float, device=device)
-    
-    # Training loop
-    for epoch in range(epochs):
-        random.shuffle(training_data)
-        losses = []
-        for i in range(0, len(training_data), batch_size):
-            batch = training_data[i: i+batch_size]
-            # Prepare context and target batches
-            context_batch = torch.tensor([sample[0] for sample in batch], dtype=torch.long, device=device)
-            target_batch = torch.tensor([sample[1] for sample in batch], dtype=torch.long, device=device)
-            
-            # Vectorized negative sampling: sample negatives for the entire batch at once
-            negative_batch = torch.multinomial(neg_sampling_prob, num_negatives * len(batch), replacement=True)
-            negative_batch = negative_batch.view(len(batch), num_negatives).to(device)
-            
-            optimizer.zero_grad()
-            loss = model(context_batch, target_batch, negative_batch)
-            loss.backward()
-            optimizer.step()
-            losses.append(loss.item())
-        
-        print(f"Epoch {epoch+1}, Loss: {np.mean(losses):.4f}")
-    
-    return model, word2idx, idx2word
+    def forward(self, context_words, target, negative_samples):
+        context_embeds = self.embeddings(context_words).mean(dim=1)
+        target_embed = self.output_embeddings(target)
+        neg_embed = self.output_embeddings(negative_samples)
 
-if __name__ == "__main__":
-    model, word2idx, idx2word = train_cbow()
-    # Save the learned input embeddings (word vectors) along with vocabulary mappings
-    torch.save({'embeddings': model.input_embeddings.weight.data.cpu(), 'word2idx': word2idx, 'idx2word': idx2word}, "cbow.pt")
-    print("CBOW embeddings saved to cbow.pt")
+        positive_score = torch.mul(context_embeds, target_embed).sum(dim=1).sigmoid()
+        negative_score = torch.mul(context_embeds.unsqueeze(1), neg_embed).sum(dim=2).sigmoid()
+
+        return -torch.log(positive_score + 1e-9).mean() - torch.log(1 - negative_score + 1e-9).mean()
+
+# Generate negative samples
+def get_negative_samples(batch_size, num_samples):
+    neg_samples = torch.randint(0, vocab_size, (batch_size, num_samples))
+    return neg_samples
+
+# Training
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = CBOWModel(vocab_size, EMBEDDING_DIM).to(device)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+criterion = nn.BCEWithLogitsLoss()
+
+context_tensors = context_tensors.to(device)
+target_tensors = target_tensors.to(device)
+
+prev_loss = float('inf')
+
+for epoch in range(EPOCHS):
+    total_loss = 0
+    for i in range(0, len(context_tensors), BATCH_SIZE):
+        context_batch = context_tensors[i:i+BATCH_SIZE]
+        target_batch = target_tensors[i:i+BATCH_SIZE]
+        negative_samples = get_negative_samples(len(target_batch), NEGATIVE_SAMPLES).to(device)
+
+        optimizer.zero_grad()
+        loss = model(context_batch, target_batch, negative_samples)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss:.4f}")
+
+    if prev_loss - total_loss < PATIENCE:
+        print("Training converged.")
+        break
+
+    prev_loss = total_loss
+
+# Save the trained embeddings and word-to-index mapping
+embeddings = model.embeddings.weight.data.cpu()
+torch.save({
+    'embeddings': embeddings,
+    'word_to_idx': vocab
+}, "./models/cbow.pt")
+print("CBOW embeddings and word-to-index mapping saved successfully.")
+

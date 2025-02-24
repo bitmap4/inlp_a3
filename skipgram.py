@@ -1,84 +1,98 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from helper import load_brown_corpus, build_vocab, generate_training_data_skipgram, get_negative_sampling_distribution, sample_negative_examples
+from nltk.corpus import brown, stopwords
 import random
+from collections import Counter
+from config import *
 
-# Check if GPU is available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# print(f"Using device: {device}")
+# Load and preprocess Brown corpus
+corpus = brown.sents()
+stop_words = stop_words = set(stopwords.words('english'))
+# Build vocabulary
+word_counts = Counter([word for sentence in corpus for word in sentence if word.lower() not in stop_words])
+vocab = {word: i for i, (word, count) in enumerate(word_counts.items())}
+idx_to_word = {i: word for word, i in vocab.items()}
+vocab_size = len(vocab)
 
-class SkipGramModel(nn.Module):
+# Generate training data for Skip-Gram model
+def generate_skipgram_pairs(corpus, window_size):
+    pairs = []
+    for sentence in corpus:
+        for i, word in enumerate(sentence):
+            if word in vocab:
+                center_word = vocab[word]
+                context_words = []
+                for j in range(-window_size, window_size + 1):
+                    if j != 0 and 0 <= i + j < len(sentence) and sentence[i + j] in vocab:
+                        context_words.append(vocab[sentence[i + j]])
+                for context in context_words:
+                    pairs.append((center_word, context))
+    return pairs
+
+pairs = generate_skipgram_pairs(corpus, WINDOW_SIZE)
+pairs = torch.tensor(pairs, dtype=torch.long)
+
+# Skip-Gram with Negative Sampling Model
+class Word2Vec(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
-        super(SkipGramModel, self).__init__()
-        self.center_embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=True)
-        self.context_embeddings = nn.Embedding(vocab_size, embedding_dim, sparse=True)
-        nn.init.xavier_uniform_(self.center_embeddings.weight)
-        nn.init.xavier_uniform_(self.context_embeddings.weight)
-    
-    def forward(self, center_words, context_words, negative_words):
-        # Get embeddings for center and context words
-        center_embeds = self.center_embeddings(center_words)        # (batch_size, dim)
-        context_embeds = self.context_embeddings(context_words)     # (batch_size, dim)
-        
-        # Positive score and loss
-        pos_score = torch.sum(center_embeds * context_embeds, dim=1)
-        pos_loss = torch.nn.functional.logsigmoid(pos_score)
-        
-        # Negative sampling
-        neg_embeds = self.context_embeddings(negative_words)  # (batch_size, num_negatives, dim)
-        neg_score = torch.bmm(neg_embeds, center_embeds.unsqueeze(2)).squeeze()  # (batch_size, num_negatives)
-        neg_loss = torch.sum(torch.nn.functional.logsigmoid(-neg_score), dim=1)
-        
-        return - (pos_loss + neg_loss).mean()
+        super(Word2Vec, self).__init__()
+        self.center_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.context_embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.center_embeddings.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
+        self.context_embeddings.weight.data.uniform_(-0.5 / embedding_dim, 0.5 / embedding_dim)
 
-def train_skipgram(embedding_dim=100, window_size=2, min_count=5, num_negatives=5, epochs=5, batch_size=512):
-    # Load corpus and build vocabulary
-    sentences = load_brown_corpus()
-    word2idx, idx2word, vocab = build_vocab(sentences, min_count)
-    training_data = generate_training_data_skipgram(sentences, word2idx, window_size)
-    vocab_size = len(word2idx)
+    def forward(self, center, context, negative_samples):
+        center_embed = self.center_embeddings(center)
+        context_embed = self.context_embeddings(context)
+        neg_embed = self.context_embeddings(negative_samples)
 
-    # Convert training data to tensors
-    center_words = torch.tensor([pair[0] for pair in training_data], dtype=torch.long)
-    context_words = torch.tensor([pair[1] for pair in training_data], dtype=torch.long)
-    
-    # Precompute negative sampling distribution
-    neg_sampling_dist = get_negative_sampling_distribution(vocab, word2idx)
-    
-    # Vectorized negative sampling
-    negative_samples = torch.tensor([
-        sample_negative_examples(neg_sampling_dist, num_negatives, pair[1])
-        for pair in training_data
-    ], dtype=torch.long)
+        positive_score = torch.mul(center_embed, context_embed).sum(dim=1).sigmoid()
+        negative_score = torch.mul(center_embed.unsqueeze(1), neg_embed).sum(dim=2).sigmoid()
 
-    # Create DataLoader
-    dataset = TensorDataset(center_words, context_words, negative_samples)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    
-    # Model, optimizer, move to device
-    model = SkipGramModel(vocab_size, embedding_dim).to(device)
-    optimizer = optim.SparseAdam(model.parameters(), lr=0.002)
+        return -torch.log(positive_score + 1e-9).mean() - torch.log(1 - negative_score + 1e-9).mean()
 
-    for epoch in range(epochs):
-        total_loss = 0
-        for center_batch, context_batch, negative_batch in dataloader:
-            center_batch, context_batch, negative_batch = center_batch.to(device), context_batch.to(device), negative_batch.to(device)
-            
-            optimizer.zero_grad()
-            loss = model(center_batch, context_batch, negative_batch)
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}, Avg Loss: {total_loss / len(dataloader):.4f}")
+# Generate negative samples
+def get_negative_samples(batch_size, num_samples):
+    neg_samples = torch.randint(0, vocab_size, (batch_size, num_samples))
+    return neg_samples
 
-    # Save embeddings
-    torch.save({'embeddings': model.center_embeddings.weight.data.cpu(), 'word2idx': word2idx, 'idx2word': idx2word}, "skipgram.pt")
-    print("Skip-gram embeddings saved to skipgram.pt")
+# Training
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = Word2Vec(vocab_size, EMBEDDING_DIM).to(device)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+criterion = nn.BCEWithLogitsLoss()
 
-if __name__ == "__main__":
-    train_skipgram()
-# Sample usage : python skipgram.py
+pairs = pairs.to(device)
+
+previous_loss = float('inf')
+
+for epoch in range(EPOCHS):
+    random.shuffle(pairs)
+    total_loss = 0
+    for i in range(0, len(pairs), BATCH_SIZE):
+        batch = pairs[i:i+BATCH_SIZE]
+        center_words, context_words = batch[:, 0], batch[:, 1]
+        negative_samples = get_negative_samples(len(batch), NEGATIVE_SAMPLES).to(device)
+
+        optimizer.zero_grad()
+        loss = model(center_words, context_words, negative_samples)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss:.4f}")
+
+    if previous_loss - total_loss < PATIENCE:
+        print("Training converged.")
+        break
+
+    previous_loss = total_loss
+
+# Extract embeddings and convert to list
+embeddings = model.center_embeddings.weight.data.cpu()
+torch.save({
+    'embeddings': embeddings,
+    'word_to_idx': vocab
+}, "./models/skipgram.pt")
+print("Skipgram Embeddings and word-to-index mapping saved successfully.")

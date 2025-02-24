@@ -1,24 +1,43 @@
-# svd.py
 import numpy as np
 import torch
-from helper import load_brown_corpus, build_vocab, get_cooccurrence_matrix
+from nltk.corpus import brown, stopwords
+from collections import Counter
+from sklearn.decomposition import TruncatedSVD
+from config import *
 
-def train_svd_embeddings(dim=300, window_size=5, min_count=5):
-    sentences = load_brown_corpus()
-    word2idx, idx2word, vocab = build_vocab(sentences, min_count)
-    cooc_matrix = get_cooccurrence_matrix(sentences, word2idx, window_size)
-    
-    # Perform Singular Value Decomposition
-    U, S, Vt = np.linalg.svd(cooc_matrix, full_matrices=False)
-    
-    # Compute embeddings as U * sqrt(S) (using only the top 'dim' components)
-    S_sqrt = np.sqrt(S[:dim])
-    embeddings = U[:, :dim] * S_sqrt[np.newaxis, :]
-    
-    embeddings_tensor = torch.tensor(embeddings, dtype=torch.float)
-    return embeddings_tensor, word2idx, idx2word
+# Load and tokenize the Brown corpus
+corpus = brown.words()
+tokens = [word.lower() for word in corpus if word.isalpha()]
+stop_words = set(stopwords.words('english'))
+tokens = [word for word in tokens if word not in stop_words]
 
-if __name__ == "__main__":
-    embeddings, word2idx, idx2word = train_svd_embeddings()
-    torch.save({'embeddings': embeddings, 'word2idx': word2idx, 'idx2word': idx2word}, "svd.pt")
-    print("SVD embeddings saved to svd.pt")
+# Build vocabulary
+vocab = Counter(tokens)
+vocab = {word: count for word, count in vocab.items()}
+vocab_list = list(vocab.keys())
+vocab_size = len(vocab_list)
+word_to_idx = {word: i for i, word in enumerate(vocab_list)}
+idx_to_word = {i: word for word, i in word_to_idx.items()}
+
+# Build Co-occurrence Matrix
+co_matrix = np.zeros((vocab_size, vocab_size))
+for i, word in enumerate(tokens):
+    if word in word_to_idx:
+        word_idx = word_to_idx[word]
+        start = max(0, i - WINDOW_SIZE)
+        end = min(len(tokens), i + WINDOW_SIZE + 1)
+        for j in range(start, end):
+            if i != j and tokens[j] in word_to_idx:
+                context_idx = word_to_idx[tokens[j]]
+                co_matrix[word_idx, context_idx] += 1
+
+# Apply SVD
+svd = TruncatedSVD(n_components=EMBEDDING_DIM)
+word_vectors = svd.fit_transform(co_matrix)
+
+# Convert to PyTorch tensor
+word_vectors_tensor = torch.tensor(word_vectors, dtype=torch.float32)
+
+# Save embeddings
+torch.save({'embeddings': word_vectors_tensor, 'word_to_idx': word_to_idx}, "./models/svd.pt")
+print("SVD embeddings and word-to-index mapping saved successfully.")
