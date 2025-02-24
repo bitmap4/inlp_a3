@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from helper import load_brown_corpus, build_vocab, generate_training_data_skipgram, get_negative_sampling_distribution, sample_negative_examples
 import random
+import numpy as np
 # from tqdm import tqdm
 
 class SkipGramModel(nn.Module):
@@ -31,8 +32,7 @@ class SkipGramModel(nn.Module):
         loss = - (pos_loss + neg_loss)
         return loss.mean()
 
-def train_skipgram(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=128):
-    # Check if CUDA is available
+def train_skipgram(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=512):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -41,30 +41,50 @@ def train_skipgram(embedding_dim=100, window_size=10, min_count=5, num_negatives
     training_data = generate_training_data_skipgram(sentences, word2idx, window_size)
     vocab_size = len(word2idx)
     
-    model = SkipGramModel(vocab_size, embedding_dim).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # Pre-compute negative sampling table
+    table_size = 1000000
+    neg_table = []
     neg_sampling_dist = get_negative_sampling_distribution(vocab, word2idx)
+    for idx, prob in enumerate(neg_sampling_dist):
+        neg_table.extend([idx] * int(prob * table_size))
+    neg_table = np.array(neg_table)
+    
+    model = SkipGramModel(vocab_size, embedding_dim).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.025)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+    
+    # Convert training data to numpy arrays for faster processing
+    center_words = np.array([pair[0] for pair in training_data])
+    context_words = np.array([pair[1] for pair in training_data])
+    
+    num_batches = (len(training_data) + batch_size - 1) // batch_size
+    indices = np.arange(len(training_data))
     
     for epoch in range(epochs):
-        random.shuffle(training_data)
-        losses = []
-        for i in range(0, len(training_data), batch_size):
-            batch = training_data[i: i+batch_size]
-            center_batch = torch.tensor([pair[0] for pair in batch], dtype=torch.long).to(device)
-            context_batch = torch.tensor([pair[1] for pair in batch], dtype=torch.long).to(device)
+        np.random.shuffle(indices)
+        total_loss = 0
+        
+        for i in range(num_batches):
+            batch_indices = indices[i * batch_size:(i + 1) * batch_size]
+            center_batch = torch.LongTensor(center_words[batch_indices]).to(device)
+            context_batch = torch.LongTensor(context_words[batch_indices]).to(device)
             
-            negative_batch = []
-            for pair in batch:
-                negatives = sample_negative_examples(neg_sampling_dist, num_negatives, pair[1])
-                negative_batch.append(negatives)
-            negative_batch = torch.tensor(negative_batch, dtype=torch.long).to(device)
+            # Fast negative sampling using pre-computed table
+            neg_indices = np.random.choice(neg_table, size=(len(batch_indices), num_negatives))
+            negative_batch = torch.LongTensor(neg_indices).to(device)
             
             optimizer.zero_grad()
             loss = model(center_batch, context_batch, negative_batch)
             loss.backward()
             optimizer.step()
-            losses.append(loss.item())
-        print(f"Epoch {epoch+1}, Loss: {sum(losses)/len(losses)}")
+            total_loss += loss.item()
+            
+            if i % 1000 == 0:
+                print(f"Epoch {epoch+1}, Batch {i}/{num_batches}, Loss: {loss.item():.4f}")
+        
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
+        scheduler.step()
     
     return model, word2idx, idx2word
 
