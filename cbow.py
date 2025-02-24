@@ -4,6 +4,7 @@ import torch.optim as optim
 from nltk.corpus import brown
 from collections import Counter
 from config import *
+from tqdm import tqdm
 
 # Load and preprocess Brown corpus
 corpus = brown.sents()
@@ -69,7 +70,10 @@ prev_loss = float('inf')
 
 for epoch in range(EPOCHS):
     total_loss = 0
-    for i in range(0, len(context_tensors), BATCH_SIZE):
+    # Create progress bar for batches
+    progress_bar = tqdm(range(0, len(context_tensors), BATCH_SIZE), desc=f'Epoch {epoch+1}/{EPOCHS}')
+    
+    for i in progress_bar:
         context_batch = context_tensors[i:i+BATCH_SIZE]
         target_batch = target_tensors[i:i+BATCH_SIZE]
         negative_samples = get_negative_samples(len(target_batch), NEGATIVE_SAMPLES).to(device)
@@ -79,8 +83,11 @@ for epoch in range(EPOCHS):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+        
+        # Update progress bar
+        progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
 
-    print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss:.4f}")
+    print(f"Epoch {epoch+1}/{EPOCHS}, Total Loss: {total_loss:.4f}")
 
     if prev_loss - total_loss < PATIENCE:
         print("Training converged.")

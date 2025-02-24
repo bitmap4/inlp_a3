@@ -5,6 +5,7 @@ from nltk.corpus import brown, stopwords
 import random
 from collections import Counter
 from config import *
+from tqdm import tqdm
 
 # Load and preprocess Brown corpus
 corpus = brown.sents()
@@ -70,7 +71,10 @@ previous_loss = float('inf')
 for epoch in range(EPOCHS):
     random.shuffle(pairs)
     total_loss = 0
-    for i in range(0, len(pairs), BATCH_SIZE):
+    # Create progress bar for batches
+    progress_bar = tqdm(range(0, len(pairs), BATCH_SIZE), desc=f'Epoch {epoch+1}/{EPOCHS}')
+    
+    for i in progress_bar:
         batch = pairs[i:i+BATCH_SIZE]
         center_words, context_words = batch[:, 0], batch[:, 1]
         negative_samples = get_negative_samples(len(batch), NEGATIVE_SAMPLES).to(device)
@@ -80,8 +84,11 @@ for epoch in range(EPOCHS):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+        
+        # Update progress bar
+        progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
 
-    print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss:.4f}")
+    print(f"Epoch {epoch+1}/{EPOCHS}, Total Loss: {total_loss:.4f}")
 
     if previous_loss - total_loss < PATIENCE:
         print("Training converged.")

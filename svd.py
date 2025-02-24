@@ -4,6 +4,7 @@ from nltk.corpus import brown, stopwords
 from collections import Counter
 from sklearn.decomposition import TruncatedSVD
 from config import *
+from tqdm import tqdm
 
 # Load and tokenize the Brown corpus
 corpus = brown.words()
@@ -19,9 +20,10 @@ vocab_size = len(vocab_list)
 word_to_idx = {word: i for i, word in enumerate(vocab_list)}
 idx_to_word = {i: word for word, i in word_to_idx.items()}
 
-# Build Co-occurrence Matrix
+# Build Co-occurrence Matrix with progress bar
 co_matrix = np.zeros((vocab_size, vocab_size))
-for i, word in enumerate(tokens):
+for i in tqdm(range(len(tokens)), desc="Building co-occurrence matrix"):
+    word = tokens[i]
     if word in word_to_idx:
         word_idx = word_to_idx[word]
         start = max(0, i - WINDOW_SIZE)
