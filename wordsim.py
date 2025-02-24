@@ -54,11 +54,28 @@ def evaluate_wordsim(model_file, wordsim_file, plot=False):
     pairs, human_scores = load_wordsim(wordsim_file)
     computed_scores = []
     filtered_human = []
+    filtered_pairs = []
+    
+    # Create output CSV filename
+    output_file = f"results/predicted_{os.path.basename(model_file)}.csv"
+    
+    # Store results for CSV
+    results = []
     for (w1, w2), human_score in zip(pairs, human_scores):
         sim = compute_cosine_similarity(embeddings, word2idx, w1.lower(), w2.lower())
         if sim is not None:
             computed_scores.append(sim)
             filtered_human.append(human_score)
+            filtered_pairs.append((w1, w2))
+            results.append([w1, w2, sim])
+    
+    # Save predictions to CSV
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Word1', 'Word2', 'Predicted'])
+        writer.writerows(results)
+    print(f"Predictions saved to {output_file}")
+    
     corr, _ = spearmanr(filtered_human, computed_scores)
     print(f"Spearman Rank Correlation for {model_file}: {corr}")
     
