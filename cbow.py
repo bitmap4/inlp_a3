@@ -30,7 +30,7 @@ class CBOWModel(nn.Module):
         loss = - (pos_loss + neg_loss)
         return loss.mean()
 
-def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=512):
+def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=499):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -94,10 +94,4 @@ if __name__ == "__main__":
         'word2idx': word2idx,
         'idx2word': idx2word
     }, "cbow.pt")
-    print("CBOW embeddings saved to cbow.pt")
-
-if __name__ == "__main__":
-    model, word2idx, idx2word = train_cbow()
-    # Save the input embeddings as the final word vectors
-    torch.save({'embeddings': model.input_embeddings.weight.data, 'word2idx': word2idx, 'idx2word': idx2word}, "cbow.pt")
     print("CBOW embeddings saved to cbow.pt")
