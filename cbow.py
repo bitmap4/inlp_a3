@@ -30,12 +30,16 @@ class CBOWModel(nn.Module):
         return loss.mean()
 
 def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=128):
+    # Check if CUDA is available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
     sentences = load_brown_corpus()
     word2idx, idx2word, vocab = build_vocab(sentences, min_count)
     training_data = generate_training_data_cbow(sentences, word2idx, window_size)
     vocab_size = len(word2idx)
     
-    model = CBOWModel(vocab_size, embedding_dim)
+    model = CBOWModel(vocab_size, embedding_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     neg_sampling_dist = get_negative_sampling_distribution(vocab, word2idx)
     
@@ -44,13 +48,14 @@ def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, 
         losses = []
         for i in range(0, len(training_data), batch_size):
             batch = training_data[i: i+batch_size]
-            context_batch = torch.tensor([sample[0] for sample in batch], dtype=torch.long)
-            target_batch = torch.tensor([sample[1] for sample in batch], dtype=torch.long)
+            context_batch = torch.tensor([sample[0] for sample in batch], dtype=torch.long).to(device)
+            target_batch = torch.tensor([sample[1] for sample in batch], dtype=torch.long).to(device)
+            
             negative_batch = []
             for sample in batch:
                 negatives = sample_negative_examples(neg_sampling_dist, num_negatives, sample[1])
                 negative_batch.append(negatives)
-            negative_batch = torch.tensor(negative_batch, dtype=torch.long)
+            negative_batch = torch.tensor(negative_batch, dtype=torch.long).to(device)
             
             optimizer.zero_grad()
             loss = model(context_batch, target_batch, negative_batch)
