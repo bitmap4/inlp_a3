@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from helper import load_brown_corpus, build_vocab, generate_training_data_cbow, get_negative_sampling_distribution, sample_negative_examples
 import random
+import numpy as np
 
 class CBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
@@ -29,8 +30,7 @@ class CBOWModel(nn.Module):
         loss = - (pos_loss + neg_loss)
         return loss.mean()
 
-def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=128):
-    # Check if CUDA is available
+def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, epochs=5, batch_size=512):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
@@ -39,32 +39,62 @@ def train_cbow(embedding_dim=100, window_size=10, min_count=5, num_negatives=5, 
     training_data = generate_training_data_cbow(sentences, word2idx, window_size)
     vocab_size = len(word2idx)
     
-    model = CBOWModel(vocab_size, embedding_dim).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # Pre-compute negative sampling table
+    table_size = 1000000
+    neg_table = []
     neg_sampling_dist = get_negative_sampling_distribution(vocab, word2idx)
+    for idx, prob in enumerate(neg_sampling_dist):
+        neg_table.extend([idx] * int(prob * table_size))
+    neg_table = np.array(neg_table)
+    
+    model = CBOWModel(vocab_size, embedding_dim).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.025)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+    
+    # Convert training data to numpy arrays for faster processing
+    context_words = np.array([sample[0] for sample in training_data])
+    target_words = np.array([sample[1] for sample in training_data])
+    
+    num_batches = (len(training_data) + batch_size - 1) // batch_size
+    indices = np.arange(len(training_data))
     
     for epoch in range(epochs):
-        random.shuffle(training_data)
-        losses = []
-        for i in range(0, len(training_data), batch_size):
-            batch = training_data[i: i+batch_size]
-            context_batch = torch.tensor([sample[0] for sample in batch], dtype=torch.long).to(device)
-            target_batch = torch.tensor([sample[1] for sample in batch], dtype=torch.long).to(device)
+        np.random.shuffle(indices)
+        total_loss = 0
+        
+        for i in range(num_batches):
+            batch_indices = indices[i * batch_size:(i + 1) * batch_size]
+            context_batch = torch.LongTensor(context_words[batch_indices]).to(device)
+            target_batch = torch.LongTensor(target_words[batch_indices]).to(device)
             
-            negative_batch = []
-            for sample in batch:
-                negatives = sample_negative_examples(neg_sampling_dist, num_negatives, sample[1])
-                negative_batch.append(negatives)
-            negative_batch = torch.tensor(negative_batch, dtype=torch.long).to(device)
+            # Fast negative sampling using pre-computed table
+            neg_indices = np.random.choice(neg_table, size=(len(batch_indices), num_negatives))
+            negative_batch = torch.LongTensor(neg_indices).to(device)
             
             optimizer.zero_grad()
             loss = model(context_batch, target_batch, negative_batch)
             loss.backward()
             optimizer.step()
-            losses.append(loss.item())
-        print(f"Epoch {epoch+1}, Loss: {sum(losses)/len(losses)}")
+            total_loss += loss.item()
+            
+            if i % 1000 == 0:
+                print(f"Epoch {epoch+1}, Batch {i}/{num_batches}, Loss: {loss.item():.4f}")
+        
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
+        scheduler.step()
     
     return model, word2idx, idx2word
+
+if __name__ == "__main__":
+    model, word2idx, idx2word = train_cbow()
+    # Save the input embeddings as the final word vectors
+    torch.save({
+        'embeddings': model.input_embeddings.weight.data.cpu(),
+        'word2idx': word2idx,
+        'idx2word': idx2word
+    }, "cbow.pt")
+    print("CBOW embeddings saved to cbow.pt")
 
 if __name__ == "__main__":
     model, word2idx, idx2word = train_cbow()

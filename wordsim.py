@@ -77,7 +77,7 @@ def evaluate_wordsim(model_file, wordsim_file, plot=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="svd.pt", help="Path to the embedding model file")
-    parser.add_argument("--wordsim", type=str, default="WordSim353 Crowd.csv", help="Path to the WordSim-353 dataset file")
+    parser.add_argument("--wordsim", type=str, default="wordsim353crowd.csv", help="Path to the WordSim-353 dataset file")
     parser.add_argument("--plot", action="store_true", help="Plot the results and save to the results folder")
     args = parser.parse_args()
     evaluate_wordsim(args.model, args.wordsim, args.plot)
