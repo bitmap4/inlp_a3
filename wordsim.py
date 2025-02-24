@@ -1,84 +1,82 @@
-# wordsim.py
-import torch
 import csv
-import argparse
-import os
+import torch
 import numpy as np
-import torch.nn.functional as F
+from scipy.spatial.distance import cosine
 from scipy.stats import spearmanr
 import matplotlib.pyplot as plt
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+from config import *
 
-def load_embeddings(model_file):
-    data = torch.load(model_file)
-    embeddings = data['embeddings']
-    word2idx = data['word2idx']
-    idx2word = data['idx2word']
-    return embeddings, word2idx, idx2word
+def cosine_similarity(vec1, vec2):
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
-def load_wordsim(file_path):
-    pairs = []
+def load_dataset(filepath):
+    word_pairs = []
     human_scores = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)  # Read the first row (header)
-
-        # Ensure the header has the correct number of columns
-        header = [col.strip() for col in header]  # Strip spaces from header
-        if len(header) < 3:
-            raise ValueError("CSV file format is incorrect: Expected at least 3 columns (Word1, Word2, Score).")
-
+    with open(filepath, 'r') as file:
+        reader = csv.reader(file)
+        next(reader)  # Skip header
         for row in reader:
-            if len(row) < 3:
-                continue  # Skip invalid rows
-            word1, word2, score = row[0].strip(), row[1].strip(), row[2].strip()
-            try:
-                score = float(score)
-                pairs.append((word1, word2))
-                human_scores.append(score)
-            except ValueError:
-                continue  # Skip rows with non-numeric scores
+            word1, word2, score = row
+            word_pairs.append((word1, word2))
+            human_scores.append(float(score))
+            normalized_human_scores = []
+            for i in human_scores:
+                normalized_human_scores.append(i/SIMILARITY_SCORE_NORMALIZER_FACTOR)
+    return word_pairs, normalized_human_scores
 
-    return pairs, human_scores
+def compute_cosine_similarities(word_pairs, vectors, indices):
+    similarities = []
+    for word1, word2 in word_pairs:
+        try:
+            vec1 = vectors[indices[word1]]
+            vec2 = vectors[indices[word2]]
+            similarity = cosine_similarity(vec1, vec2)
+            similarities.append(similarity)
+        except:
+            similarities.append(None)
+    return similarities
 
+def filter_valid_pairs(human_scores, similarities, embedding):
+    valid_human_scores = []
+    valid_similarities = []
+    for human_score, similarity in zip(human_scores, similarities):
+        if similarity is not None:
+            valid_human_scores.append(human_score)
+            valid_similarities.append(similarity)
+    plt.scatter(valid_human_scores, valid_similarities)
+    plt.xlabel('Human Scores')
+    plt.ylabel('Cosine Similarities')
+    plt.title('Human Scores vs Cosine Similarities')
+    plt.axhline(y=1.0, color='r', linestyle='--')
+    plt.axvline(x=10, color='b', linestyle='--')
+    plt.axhline(y=0, color='k', linestyle='--')
+    if embedding == "SVD":
+        plt.savefig('./plots/svd.png')
+    elif embedding == "CBOW":
+        plt.savefig('./plots/cbow.png')
+    elif embedding == "Skipgram":
+        plt.savefig('./plots/skipgram.png')
+    return valid_human_scores, valid_similarities
 
-def compute_cosine_similarity(embeddings, word2idx, word1, word2):
-    if word1 not in word2idx or word2 not in word2idx:
-        return None
-    vec1 = embeddings[word2idx[word1]]
-    vec2 = embeddings[word2idx[word2]]
-    cos_sim = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0))
-    return cos_sim.item()
-
-def evaluate_wordsim(model_file, wordsim_file, plot=False):
-    embeddings, word2idx, idx2word = load_embeddings(model_file)
-    pairs, human_scores = load_wordsim(wordsim_file)
-    computed_scores = []
-    filtered_human = []
-    for (w1, w2), human_score in zip(pairs, human_scores):
-        sim = compute_cosine_similarity(embeddings, word2idx, w1.lower(), w2.lower())
-        if sim is not None:
-            computed_scores.append(sim)
-            filtered_human.append(human_score)
-    corr, _ = spearmanr(filtered_human, computed_scores)
-    print(f"Spearman Rank Correlation for {model_file}: {corr}")
-    
-    if plot:
-        plt.figure()
-        plt.scatter(filtered_human, computed_scores, alpha=0.5)
-        plt.xlabel("Human Similarity Scores")
-        plt.ylabel("Cosine Similarity")
-        plt.title(f"WordSim Evaluation - {os.path.basename(model_file)}")
-        os.makedirs("results", exist_ok=True)
-        plot_file = os.path.join("results", f"wordsim_{os.path.basename(model_file)}.png")
-        plt.savefig(plot_file)
-        plt.close()
-        print(f"Plot saved to {plot_file}")
+def main():
+    embedding = input("Enter the embedding type (SVD or CBOW or Skipgram): ")
+    if embedding == "SVD":
+        word_vectors = torch.load('./models/svd.pt')
+    elif embedding == "CBOW":
+        word_vectors = torch.load('./models/cbow.pt')
+    elif embedding == "Skipgram":
+        word_vectors = torch.load('./models/skipgram.pt')
+    vectors  = word_vectors['embeddings']
+    indices = word_vectors["word_to_idx"]
+    filepath = 'wordsim353crowd.csv'
+    word_pairs, human_scores = load_dataset(filepath)
+    similarities = compute_cosine_similarities(word_pairs, vectors, indices)
+    valid_human_scores, valid_similarities = filter_valid_pairs(human_scores, similarities, embedding)
+    spearman_corr, _ = spearmanr(valid_human_scores, valid_similarities)
+    print(f"Spearman's Rank Correlation for {embedding}: {spearman_corr}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="svd.pt", help="Path to the embedding model file")
-    parser.add_argument("--wordsim", type=str, default="wordsim353crowd.csv", help="Path to the WordSim-353 dataset file")
-    parser.add_argument("--plot", action="store_true", help="Plot the results and save to the results folder")
-    args = parser.parse_args()
-    evaluate_wordsim(args.model, args.wordsim, args.plot)
-    # Sample usage : python wordsim.py --model skipgram.pt --wordsim "WordSim353 Crowd.csv" --plot
+    main()
